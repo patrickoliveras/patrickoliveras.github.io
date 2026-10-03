@@ -86,12 +86,16 @@ self.addEventListener('activate', (event) => {
   precache().catch(() => {});
 });
 
-function isolate(response) {
+function isolate(response, { revalidate = false } = {}) {
   if (!response || response.status === 0 || response.type === 'opaque' || response.type === 'opaqueredirect') return response;
   const headers = new Headers(response.headers);
   headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
   headers.set('Cross-Origin-Opener-Policy', 'same-origin');
   headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+  // GitHub Pages says max-age=600; left alone, the browser would reuse page
+  // files from memory for 10 minutes without asking us, and a visitor could
+  // run half old, half new code right after an update. Always ask.
+  if (revalidate) headers.set('Cache-Control', 'no-cache');
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
@@ -123,6 +127,6 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
   if (url.origin !== self.location.origin || !url.pathname.startsWith(scopePath)) return;
   if (request.headers.has('range')) return; // let the browser handle partial requests
-  const handler = url.pathname.includes('/vendor/') ? cacheFirst : networkFirst;
-  event.respondWith(handler(request).then(isolate));
+  const vendor = url.pathname.includes('/vendor/');
+  event.respondWith((vendor ? cacheFirst : networkFirst)(request).then((res) => isolate(res, { revalidate: !vendor })));
 });
