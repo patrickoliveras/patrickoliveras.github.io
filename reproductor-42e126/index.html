@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="es" data-state="idle">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+<meta name="googlebot" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6EFE4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16110D" media="(prefers-color-scheme: dark)">
+<meta name="description" content="Convierte cualquier video al formato del reproductor ZUSZOX de 3 pulgadas.">
+<title>Videos para el reproductor</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="img/icon-180.png">
+<link rel="preload" href="fonts/fraunces-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/atkinson-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="app.css">
+<script nomodule>
+  // Browsers without ES modules are far too old for the converter.
+  document.documentElement.setAttribute('data-state', 'ancient');
+</script>
+</head>
+<body>
+<a class="skip" href="#main" data-i18n="hero.choose">Elegir video</a>
+
+<div class="page">
+  <header class="topbar">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><use href="#i-player"></use></svg>
+      <span class="brand-name" data-i18n="doc.title">Videos para el reproductor</span>
+    </div>
+    <button class="lang" id="lang" type="button" data-i18n="lang.switch" data-i18n-aria="lang.switchLabel" lang="en">English</button>
+  </header>
+
+  <main id="main" class="stage" tabindex="-1">
+    <section class="copy" aria-live="off">
+      <!-- Idle: invitation -->
+      <div class="intro" id="intro">
+        <h1 class="display" data-i18n="hero.title">Lleva tus videos al reproductor</h1>
+        <p class="lede" data-i18n="hero.lede">Elige un video y lo dejamos listo para tu reproductor ZUSZOX.</p>
+        <div class="choose">
+          <button class="btn btn-primary btn-xl" type="button" id="choose-btn" data-action="choose">
+            <svg class="i" aria-hidden="true"><use href="#i-film"></use></svg>
+            <span data-i18n="hero.choose">Elegir video</span>
+          </button>
+          <span class="drop-hint" data-i18n="hero.drop">o arrástralo aquí</span>
+        </div>
+        <p class="privacy">
+          <svg class="i i-sm" aria-hidden="true"><use href="#i-lock"></use></svg>
+          <span id="privacy-text" data-i18n="hero.privacy.computer">Tu video no se sube a internet: se convierte aquí, en tu computadora.</span>
+        </p>
+        <ol class="steps" aria-label="">
+          <li><span class="n">1</span><span data-i18n="steps.1">Elige el video</span></li>
+          <li><span class="n">2</span><span data-i18n="steps.2">Espera a que se convierta</span></li>
+          <li><span class="n">3</span><span data-i18n="steps.3">Pásalo al reproductor</span></li>
+        </ol>
+      </div>
+
+      <!-- Working: the selected video -->
+      <div class="work" id="work" hidden></div>
+
+      <!-- Too-old browser -->
+      <div class="ancient" id="ancient" hidden>
+        <h1 class="display" data-i18n="err.title.browser-unsupported">Este navegador es muy antiguo</h1>
+        <p class="lede" data-i18n="err.body.browser-unsupported">Abre esta página en Chrome, Edge, Firefox o Safari, actualizados.</p>
+      </div>
+    </section>
+
+    <section class="showcase">
+      <figure class="device" id="device">
+        <div class="device-halo" aria-hidden="true"></div>
+        <div class="device-body" id="device-body" aria-hidden="true"></div>
+        <div class="screen" id="screen">
+          <canvas id="screen-canvas" width="640" height="480" role="img" data-i18n-aria="a11y.player" aria-label="Ilustración del reproductor ZUSZOX mostrando tu video"></canvas>
+          <div class="screen-glass" aria-hidden="true"></div>
+          <button class="screen-play" id="screen-play" type="button" hidden data-i18n-aria="done.playLabel" aria-label="Reproducir la vista previa">
+            <svg aria-hidden="true"><use href="#i-play"></use></svg>
+          </button>
+        </div>
+      </figure>
+      <button class="play-caption" id="play-caption" type="button" hidden></button>
+      <div class="fit" id="fit" hidden role="radiogroup" data-i18n-aria="fit.label" aria-label="Imagen">
+        <button type="button" role="radio" data-fit="fit" aria-checked="true">
+          <svg class="fit-ico" viewBox="0 0 40 30" aria-hidden="true"><rect x="1" y="1" width="38" height="28" rx="3" class="fit-frame"/><rect x="4" y="8" width="32" height="14" rx="1.5" class="fit-pic"/></svg>
+          <span><b data-i18n="fit.fit">Completa</b><small data-i18n="fit.fitHint">Se ve todo, con franjas negras</small></span>
+        </button>
+        <button type="button" role="radio" data-fit="fill" aria-checked="false">
+          <svg class="fit-ico" viewBox="0 0 40 30" aria-hidden="true"><rect x="1" y="1" width="38" height="28" rx="3" class="fit-frame"/><rect x="3" y="3" width="34" height="24" rx="1.5" class="fit-pic"/></svg>
+          <span><b data-i18n="fit.fill">Pantalla llena</b><small data-i18n="fit.fillHint">Llena la pantalla y recorta las orillas</small></span>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <section class="queue" id="queue" hidden aria-labelledby="queue-title">
+    <div class="queue-head">
+      <h2 id="queue-title" data-i18n="list.title">Tus videos</h2>
+      <span class="queue-summary" id="queue-summary"></span>
+    </div>
+    <ul class="queue-list" id="queue-list"></ul>
+  </section>
+
+  <section class="faq" aria-labelledby="faq-title">
+    <h2 id="faq-title" class="section-title" data-i18n="faq.title">Preguntas</h2>
+    <details>
+      <summary data-i18n="faq.how.q">¿Cómo paso el video al reproductor?</summary>
+      <div class="answer" id="faq-how"></div>
+    </details>
+    <details>
+      <summary data-i18n="faq.why.q">¿Por qué hay que convertir los videos?</summary>
+      <p class="answer" data-i18n="faq.why.a"></p>
+    </details>
+    <details>
+      <summary data-i18n="faq.private.q">¿Mi video se sube a internet?</summary>
+      <p class="answer" data-i18n="faq.private.a"></p>
+    </details>
+    <details>
+      <summary data-i18n="faq.what.q">¿Qué videos puedo convertir?</summary>
+      <p class="answer" data-i18n="faq.what.a"></p>
+    </details>
+    <details>
+      <summary data-i18n="faq.error.q">El reproductor dice «formato erróneo»</summary>
+      <p class="answer" data-i18n="faq.error.a"></p>
+    </details>
+    <details>
+      <summary data-i18n="faq.missing.q">No aparece el video en el reproductor</summary>
+      <p class="answer" data-i18n="faq.missing.a"></p>
+    </details>
+    <details>
+      <summary data-i18n="faq.bt.q">El video no se reproduce con audífonos Bluetooth</summary>
+      <p class="answer" data-i18n="faq.bt.a"></p>
+    </details>
+  </section>
+
+  <footer class="footer">
+    <p data-i18n="footer.love">Hecho con cariño, para la familia.</p>
+  </footer>
+</div>
+
+<input type="file" id="file-input" class="file-input" multiple tabindex="-1" aria-hidden="true"
+  accept="video/*,audio/*,.mp4,.m4v,.mov,.qt,.avi,.divx,.xvid,.wmv,.asf,.mkv,.mk3d,.mka,.webm,.flv,.f4v,.swf,.mpg,.mpeg,.mpe,.m1v,.m2v,.mpv,.vob,.vro,.ts,.mts,.m2ts,.m2t,.trp,.tod,.mod,.3gp,.3g2,.3ga,.ogv,.ogg,.ogx,.dv,.mxf,.rm,.rmvb,.nut,.ivf,.y4m,.h264,.264,.hevc,.265,.mjpeg,.mjpg,.gif,.amv,.mp3,.m4a,.aac,.ac3,.wav,.wma,.flac,.opus,.amr,.aif,.aiff,.caf"">
+
+<div class="drop-overlay" id="drop-overlay" hidden aria-hidden="true">
+  <div class="drop-card">
+    <svg class="i i-xl" aria-hidden="true"><use href="#i-film"></use></svg>
+    <span data-i18n="hero.dropActive">Suéltalo aquí</span>
+  </div>
+</div>
+
+<div class="sr-only" id="announcer" aria-live="polite" aria-atomic="true"></div>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-film" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M10 9.2v5.6c0 .5.5.8 1 .5l4.4-2.8c.4-.3.4-.8 0-1.1L11 8.7c-.5-.3-1 0-1 .5Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="10" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5.6v12.8c0 .8.9 1.3 1.6.8l10-6.4c.6-.4.6-1.2 0-1.6l-10-6.4C8.9 4.3 8 4.8 8 5.6Z" fill="currentColor"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="6.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/><rect x="13.5" y="5" width="4" height="14" rx="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5"/><path d="M5 17.5V19a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-1.5"/></symbol>
+    <symbol id="i-usb" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2.5" width="10" height="7" rx="1.2"/><path d="M10 5.5h.01M14 5.5h.01"/><path d="M8.5 9.5v6.5a3.5 3.5 0 0 0 7 0V9.5"/><path d="M12 19.5V22"/></symbol>
+    <symbol id="i-player" viewBox="0 0 32 32"><rect x="7" y="2" width="18" height="28" rx="4.2" fill="currentColor"/><rect x="9.4" y="5" width="13.2" height="17.6" rx="1.2" fill="var(--mark-screen, #F2C46B)"/><path d="M14 10.6v6.8l5.6-3.4z" fill="var(--mark-play, #2a2019)"/><circle cx="16" cy="26" r="1.9" fill="none" stroke="var(--mark-ring, #d9d2ca)" stroke-width="1.1"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5"/><path d="M12 16.5h.01"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M7 7l10 10M17 7 7 17"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4m0 0L8 8m4-4 4 4"/><path d="M6 11v8a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-8"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-retry" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5v3.7h3.7"/></symbol>
+  </defs>
+</svg>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

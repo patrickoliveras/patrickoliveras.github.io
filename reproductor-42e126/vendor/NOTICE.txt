@@ -1,0 +1,22 @@
+Third-party software in this folder
+===================================
+
+ffmpeg-0.12.10-st/ and ffmpeg-0.12.10-mt/
+  ffmpeg.wasm core 0.12.10 (@ffmpeg/core and @ffmpeg/core-mt on npm),
+  a WebAssembly build of FFmpeg 5.1 (libavcodec 59.37.100, libavformat
+  59.27.100) with libx264, libx265, libvpx, libmp3lame, libtheora,
+  libvorbis, libopus, zlib, libwebp, freetype, fribidi, libass and zimg.
+  Because it includes GPL components it is distributed under the GNU
+  General Public License, version 2 or later. The files here are the
+  unmodified npm builds.
+
+  Complete corresponding source and build scripts:
+    https://github.com/ffmpegwasm/ffmpeg.wasm/tree/v0.12.10
+    https://www.npmjs.com/package/@ffmpeg/core/v/0.12.10
+    https://www.npmjs.com/package/@ffmpeg/core-mt/v/0.12.10
+    https://git.ffmpeg.org/gitweb/ffmpeg.git (release/5.1)
+  License texts: https://www.gnu.org/licenses/old-licenses/gpl-2.0.html
+
+../fonts/
+  Fraunces (OFL-1.1) and Atkinson Hyperlegible Next (OFL-1.1); license
+  texts alongside the font files.
