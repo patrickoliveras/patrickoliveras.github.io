@@ -5,7 +5,7 @@
 import { t, setLang, getLang, initialLang, pct } from './i18n.js';
 import { outputName, uniqueName, formatDuration, formatBytes, createEta, TARGET } from './plan.js';
 import { createEngine, wasmSupported } from './engine.js';
-import { analyze, convert, ConvertError } from './converter.js';
+import { analyze, convert, verifyAmv, ConvertError } from './converter.js';
 import { createScreen } from './screen.js';
 import { makeCard } from './card.js';
 import * as save from './save.js';
@@ -14,16 +14,18 @@ import { mountDevice } from './device.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
 const storage = {
+  // Session only: an accidental click on "English" mustn't stick for the
+  // next visit of someone who reads only Spanish.
   get(k) {
     try {
-      return localStorage.getItem(k);
+      return sessionStorage.getItem(k);
     } catch (_) {
       return null;
     }
   },
   set(k, v) {
     try {
-      localStorage.setItem(k, v);
+      sessionStorage.setItem(k, v);
     } catch (_) {}
   },
 };
@@ -54,7 +56,7 @@ const el = {
   body: $('#device-body'),
   canvas: $('#screen-canvas'),
   play: $('#screen-play'),
-  playCaption: $('#play-caption'),
+  fitRedo: $('#fit-redo'),
   fit: $('#fit'),
   queue: $('#queue'),
   queueList: $('#queue-list'),
@@ -100,6 +102,10 @@ function announce(text) {
   setTimeout(() => (el.announcer.textContent = text), 60);
 }
 
+function reduceMotion() {
+  return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 function titleOf(name) {
   return String(name).replace(/\.[A-Za-z0-9]{1,5}$/, '').trim() || name;
 }
@@ -120,8 +126,10 @@ function applyStatic() {
   });
   el.lang.lang = lang() === 'es' ? 'en' : 'es';
   el.privacy.textContent = t(`hero.privacy.${save.platform}`);
+  const step3 = document.querySelector('[data-i18n="steps.3"]');
+  if (step3 && save.platform !== 'computer') step3.textContent = t('steps.3.phone');
   baseTitle = t('doc.title');
-  renderGuideInto(el.faqHow, { outName: lang() === 'es' ? 'tu video.amv' : 'your video.amv', title: lang() === 'es' ? 'tu video' : 'your video' }, false, 3);
+  renderFaqHow(el.faqHow);
 }
 
 // ------------------------------------------------------------ items
@@ -136,7 +144,7 @@ function addFiles(fileList) {
       file,
       name: file.name,
       title: titleOf(file.name),
-      outName: uniqueName(outputName(file.name), takenNames),
+      outName: uniqueName(outputName(file.name, 60, getLang()), takenNames),
       status: 'checking',
       fit: 'fit',
       progress: null,
@@ -155,6 +163,11 @@ function addFiles(fileList) {
   announce(t('a11y.announce.added', { title: files.map((f) => titleOf(f.name)).join(', ') }));
   render({ focus: true });
   schedule();
+}
+
+function takeName(item, name) {
+  takenNames.delete(item.outName.toLocaleLowerCase('es'));
+  return uniqueName(outputName(name, 60, getLang()), takenNames);
 }
 
 function removeItem(item) {
@@ -188,8 +201,24 @@ async function runAnalysis(item) {
     if (!items.includes(item)) return;
     item.analysis = a;
     if (a.kind === 'already-amv') {
-      item.status = 'error';
-      item.error = new ConvertError('already-amv');
+      // A file in exactly the proven format is ready as it is; anything else
+      // with an AMV header is converted again, which normalizes it.
+      const check = await verifyAmv(item.file);
+      if (check.ok) {
+        item.asIs = true;
+        item.outName = takeName(item, item.file.name);
+        item.result = { blob: item.file, frames: check.frames, seconds: check.frames / TARGET.fps, mode: 'as-is', attempts: 0 };
+        item.status = 'done';
+        await prepareDonePicture(item);
+        return;
+      }
+      item.analysis = await analyze(engine, item.file, { signal: item.abort.signal, forceConvert: true }).catch(() => null);
+      if (!item.analysis || item.analysis.kind === 'already-amv') {
+        item.status = 'error';
+        item.error = new ConvertError('unreadable');
+        return;
+      }
+      item.status = 'queued';
     } else {
       if (a.thumbnail) {
         try {
@@ -291,7 +320,6 @@ async function prepareDonePicture(item) {
 function setFit(item, fit) {
   if (!item || item.fit === fit) return;
   item.fit = fit;
-  storage.set('fit', fit);
   stopPreview();
   if (item.status === 'converting') {
     item.restart = true;
@@ -327,9 +355,15 @@ function errorKey(err) {
 
 // ------------------------------------------------------------ saving
 
-async function saveToPlayer(item, { allowInternal = false, fromPickStep = false, forcePick = false } = {}) {
+/** Ready videos that haven't been saved anywhere yet. */
+function unsaved() {
+  return items.filter((it) => it.status === 'done' && (!it.saved || it.saved.where === 'error'));
+}
+
+async function saveToPlayer(item, { allowInternal = false, allowComputer = false, fromPickStep = false, forcePick = false } = {}) {
   const owner = item || current;
-  const targets = item ? [item] : items.filter((it) => it.status === 'done');
+  const targets = item ? [item] : unsaved();
+  owner.saveNote = null;
   try {
     let root = null;
     if (fromPickStep || forcePick) {
@@ -339,23 +373,35 @@ async function saveToPlayer(item, { allowInternal = false, fromPickStep = false,
       if (!root) {
         // First time: say what's about to happen before a system window opens.
         owner.picking = true;
+        owner.pickTargets = item ? null : 'all';
         render({ focus: 'pick' });
         return;
       }
     }
-    const target = await save.resolveTarget(root, { allowInternal });
-    if (target.warning === 'internal') {
+    const target = await save.resolveTarget(root, { allowInternal, allowComputer });
+    if (target.warning) {
       owner.picking = false;
-      showInternalWarning(owner);
+      folderWarning = { item: owner, kind: target.warning, all: !item };
+      render({ focus: 'warning' });
       return;
     }
+    owner.saving = true;
+    owner.picking = false;
+    render();
     for (const it of targets) {
       await save.writeTo(target.dir, it.outName, it.result.blob);
-      it.saved = { where: 'player', label: target.label };
+      it.saved = { where: target.certainty === 'other' ? 'folder' : 'player', label: target.label, certainty: target.certainty, batch: targets.length };
       it.picking = false;
     }
   } catch (err) {
-    if (err && err.name === 'AbortError') return; // closed the picker
+    owner.saving = false;
+    if (err && err.name === 'AbortError') {
+      // Closed the window or said no to the permission prompt.
+      owner.picking = false;
+      owner.saveNote = 'player.notSaved';
+      render({ focus: 'note' });
+      return;
+    }
     if (err && (err.name === 'SecurityError' || err.name === 'NotAllowedError')) {
       owner.picking = true; // the click "expired"; one more click opens the picker
       render({ focus: 'pick' });
@@ -364,24 +410,20 @@ async function saveToPlayer(item, { allowInternal = false, fromPickStep = false,
     owner.picking = false;
     owner.saved = { where: 'error', message: String(err && err.message ? err.message : err) };
   }
+  owner.saving = false;
   render({ focus: 'saved' });
 }
 
 function saveToComputer(item) {
-  const targets = item ? [item] : items.filter((it) => it.status === 'done');
+  const targets = item ? [item] : unsaved();
   targets.forEach((it, i) => {
     setTimeout(() => save.download(it.result.blob, it.outName), i * 700);
-    it.saved = { where: 'downloads' };
+    it.saved = { where: 'downloads', batch: targets.length };
   });
   render({ focus: 'saved' });
 }
 
-let internalWarningFor = null;
-function showInternalWarning(item) {
-  internalWarningFor = item || current;
-  render();
-}
-
+let folderWarning = null; // {item, kind: 'internal'|'computer', all}
 // ------------------------------------------------------------ preview playback
 
 function stopPreview() {
@@ -390,7 +432,6 @@ function stopPreview() {
     preview = null;
   }
   el.play.classList.remove('playing');
-  if (el.playCaption) renderPlayCaption();
 }
 
 async function togglePreview() {
@@ -418,7 +459,6 @@ async function togglePreview() {
       preview = null;
       p?.dispose();
       drawDevice();
-      renderPlayCaption();
     },
   });
   preview.item = item;
@@ -436,16 +476,25 @@ async function togglePreview() {
 
 function render({ focus = false } = {}) {
   const state = !items.length ? 'idle' : current?.status === 'done' ? 'done' : 'working';
-  el.root.dataset.state = el.root.dataset.state === 'ancient' ? 'ancient' : state;
-  el.intro.hidden = !!items.length;
-  el.work.hidden = !items.length;
-  if (items.length) renderWork(focus);
-  else el.work.replaceChildren();
-  renderQueue();
-  drawDevice();
-  renderFit();
-  renderPlayCaption();
-  updateTitle();
+  const prev = el.root.dataset.state;
+  const update = () => {
+    el.root.dataset.state = prev === 'ancient' ? 'ancient' : state;
+    el.intro.hidden = !!items.length;
+    el.work.hidden = !items.length;
+    if (items.length) renderWork(focus);
+    else el.work.replaceChildren();
+    renderQueue();
+    drawDevice();
+    renderFit();
+    updateTitle();
+  };
+  // Between page states the player glides and the words cross-fade.
+  const reduce = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (prev !== state && prev !== 'ancient' && document.startViewTransition && !reduce && !document.hidden) {
+    document.startViewTransition(update);
+  } else {
+    update();
+  }
 }
 
 function engineLine() {
@@ -476,51 +525,66 @@ function metaText(item) {
   return parts.join(' · ');
 }
 
+function busyHeadline(item) {
+  const engineMsg = engineLine();
+  if (item.status === 'checking') return engineMsg && engineStatus.state !== 'ready' ? t('engine.preparing') : t('item.checking');
+  if (item.status === 'queued') return t('item.waiting');
+  return t('item.converting');
+}
+
+function busyLine(item) {
+  if (item.status === 'checking') {
+    if (engineLine() && engineStatus.state !== 'ready') {
+      if (engineStatus.state === 'offline') return t('engine.offline');
+      return `${pct(engineStatus.progress || 0)} · ${t('engine.firstTime')}`;
+    }
+    return '';
+  }
+  if (item.status === 'queued') return '';
+  if (item.retrying && !(item.progress > 0)) return t('item.retrying');
+  if (item.progress == null) return '';
+  const eta = etaText(item);
+  return eta ? `${pct(item.progress)} · ${eta}` : pct(item.progress);
+}
+
 function renderWork(focus) {
   const item = current;
   if (!item) return;
   const box = h('div', { class: 'work-inner', 'data-status': item.status });
-
-  const eyebrowText = item.status === 'done' ? item.outName : item.name;
-  box.append(h('p', { class: 'eyebrow' }, icon('film', 'i i-sm'), h('span', { text: eyebrowText })));
+  const d = item.result?.seconds || item.analysis?.duration;
+  const name = item.status === 'done' ? item.outName : item.name;
+  box.append(h('p', { class: 'eyebrow', text: d && item.status !== 'error' ? `${name} · ${formatDuration(d, lang())}` : name }));
 
   if (item.status === 'done') {
     box.append(renderDone(item));
   } else if (item.status === 'error') {
     box.append(renderError(item));
   } else {
-    box.append(h('h1', { class: 'work-title display', tabindex: '-1', id: 'work-title', text: item.title }));
-    const meta = metaText(item);
-    if (meta) box.append(h('p', { class: 'work-meta', text: meta }));
+    box.append(h('h1', { class: 'work-title display', tabindex: '-1', id: 'work-title', text: busyHeadline(item) }));
     box.append(renderBusy(item));
   }
 
   el.work.replaceChildren(box);
   if (focus === true) $('#work-title', el.work)?.focus({ preventScroll: true });
   if (focus === 'saved') ($('.saved', el.work) || $('#work-title', el.work))?.focus?.({ preventScroll: false });
-  if (focus === 'pick') $('#pick-title', el.work)?.focus?.({ preventScroll: false });
+  if (focus === 'pick' || focus === 'warning' || focus === 'note') {
+    const target = $(focus === 'pick' ? '.pick' : '.saved', el.work);
+    target?.scrollIntoView?.({ block: 'nearest', behavior: reduceMotion() ? 'auto' : 'smooth' });
+    ($(focus === 'pick' ? '#pick-title' : '.saved', el.work))?.focus?.({ preventScroll: true });
+  }
+  if (focus === 'saved') $('.guide', el.work)?.scrollIntoView?.({ block: 'nearest', behavior: reduceMotion() ? 'auto' : 'smooth' });
 }
 
 function renderBusy(item) {
   const status = h('div', { class: 'status' });
-  const engineMsg = engineLine();
-  const waitingForEngine = engineMsg && engineStatus.state !== 'ready';
-  let line;
-  let sub = '';
   let p = null;
   if (item.status === 'checking') {
-    line = waitingForEngine ? engineMsg : t('item.checking');
-    sub = waitingForEngine ? t('engine.firstTime') : '';
-    p = waitingForEngine ? engineStatus.progress : null;
+    p = engineLine() && engineStatus.state !== 'ready' ? engineStatus.progress || 0 : null;
   } else if (item.status === 'queued') {
-    line = t('item.waiting');
     p = 0;
   } else {
-    line = item.retrying ? t('item.retrying') : item.progress == null ? t('item.converting') : t('item.convertingPct', { pct: pct(item.progress) });
-    sub = etaText(item);
     p = item.progress;
   }
-  const lineEl = h('div', { class: 'status-line' }, h('span', { id: 'status-text', text: line }));
   const meter = h(
     'div',
     {
@@ -535,14 +599,12 @@ function renderBusy(item) {
     },
     h('i')
   );
-  status.append(lineEl, meter, h('p', { class: 'status-sub', id: 'status-sub', text: sub }));
-  const keepKey = item.analysis?.browserDecode ? 'item.keepVisible' : 'item.keepOpen';
+  status.append(meter, h('p', { class: 'status-line', id: 'status-text', text: busyLine(item) }));
+  const keepKey = item.analysis?.browserDecode ? 'item.keepVisible' : save.platform !== 'computer' ? 'item.keepOpenPhone' : 'item.keepOpen';
   status.append(h('p', { class: 'note' }, icon('clock', 'i i-sm'), h('span', { text: t(keepKey) })));
-  const actions = h('div', { class: 'actions' });
-  actions.append(
-    h('button', { class: 'btn btn-quiet', type: 'button', 'data-action': 'cancel', onclick: () => removeItem(item) }, t('item.cancel'))
+  status.append(
+    h('div', { class: 'actions' }, h('button', { class: 'btn btn-quiet', type: 'button', 'data-action': 'cancel', onclick: () => removeItem(item) }, t('item.cancel')))
   );
-  status.append(actions);
   return status;
 }
 
@@ -554,14 +616,8 @@ function renderProgress(item) {
     return;
   }
   const text = $('#status-text', el.work);
-  const sub = $('#status-sub', el.work);
   const meter = $('#meter', el.work);
-  if (text) {
-    text.textContent = item.retrying && !(item.progress > 0)
-      ? t('item.retrying')
-      : item.progress == null ? t('item.converting') : t('item.convertingPct', { pct: pct(item.progress) });
-  }
-  if (sub) sub.textContent = etaText(item);
+  if (text) text.textContent = busyLine(item);
   if (meter) {
     if (item.progress == null) {
       meter.classList.add('indeterminate');
@@ -577,28 +633,46 @@ function renderProgress(item) {
   updateTitle();
 }
 
+function doneMark(item, kind = 'ok') {
+  // The check draws itself once; re-renders (saving, language) keep it still.
+  const cls = `done-mark${kind === 'bad' ? ' bad' : ''}${item.celebrated ? ' static' : ''}`;
+  item.celebrated = true;
+  return h('div', { class: cls, 'aria-hidden': 'true' }, icon(kind === 'bad' ? 'alert' : 'check', ''));
+}
+
+function sizeText(item) {
+  const parts = [formatBytes(item.result.blob.size, lang())];
+  if (item.result.seconds) parts.push(formatDuration(item.result.seconds, lang()));
+  return parts.join(' · ');
+}
+
 function renderDone(item) {
   const frag = document.createDocumentFragment();
-  const head = h('div', { class: 'done-head' });
-  head.append(h('div', { class: 'done-mark', 'aria-hidden': 'true' }, icon('check', '')));
-  head.append(h('h1', { class: 'work-title display', tabindex: '-1', id: 'work-title', text: t('done.title') }));
-  frag.append(head);
-  frag.append(h('p', { class: 'lede', text: t('done.lede') }));
-  frag.append(h('p', { class: 'work-meta', text: `${item.title} · ${metaText(item)}` }));
-  frag.append(h('p', { class: 'verified' }, icon('check', 'i i-sm'), h('span', { text: t('done.verified') })));
+  const isPhone = save.platform !== 'computer';
+  const title = item.asIs ? t('err.title.already-amv') : t('done.title');
+  const lede = item.asIs ? t('err.body.already-amv') : t(isPhone ? 'done.lede.phone' : 'done.lede');
+  frag.append(h('div', { class: 'done-head' }, doneMark(item), h('h1', { class: 'work-title display', tabindex: '-1', id: 'work-title', text: title })));
+  frag.append(h('p', { class: 'lede', text: lede }));
+  frag.append(h('p', { class: 'work-meta', text: sizeText(item) }));
   // FAT32, which the player's card uses, can't hold a file of 4 GiB or more.
   if (item.result.blob.size >= 4294967295) {
     frag.append(h('div', { class: 'saved warn', role: 'alert' }, icon('alert', 'i'), h('span', { text: t('done.tooBig') })));
   }
+  const notNow = () =>
+    h('button', { class: 'btn btn-quiet', type: 'button', 'data-action': 'not-now', onclick: () => { item.picking = false; folderWarning = null; render(); } }, t('player.notNow'));
 
-  if (internalWarningFor === item) {
+  if (folderWarning && folderWarning.item === item) {
+    const w = folderWarning;
+    const again = () => { folderWarning = null; saveToPlayer(w.all ? null : item, { forcePick: true }); };
+    const anyway = () => { folderWarning = null; saveToPlayer(w.all ? null : item, w.kind === 'internal' ? { allowInternal: true, forcePick: false } : { allowComputer: true }); };
     frag.append(
-      h('div', { class: 'saved warn', role: 'alert' }, icon('alert', 'i'), h('span', { text: t('player.internalWarning') })),
+      h('div', { class: 'saved warn', role: 'alert', tabindex: '-1' }, icon('alert', 'i'), h('span', { text: t(w.kind === 'internal' ? 'player.internalWarning' : 'player.computerWarning') })),
       h(
         'div',
         { class: 'actions' },
-        h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => { internalWarningFor = null; saveToPlayer(item, { forcePick: true }); } }, t('player.chooseOther')),
-        h('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { internalWarningFor = null; saveToPlayer(item, { allowInternal: true }); } }, t('player.useAnyway'))
+        h('button', { class: 'btn btn-primary btn-xl', type: 'button', 'data-action': 'pick-again', onclick: again }, icon('usb'), t(w.kind === 'internal' ? 'player.chooseOther' : 'player.pickAgain')),
+        h('button', { class: 'btn btn-quiet', type: 'button', 'data-action': 'save-anyway', onclick: anyway }, t('player.useAnyway')),
+        notNow()
       )
     );
     return frag;
@@ -606,91 +680,124 @@ function renderDone(item) {
 
   if (item.picking) {
     const osKey = save.os === 'mac' ? 'mac' : save.os === 'windows' ? 'windows' : 'other';
+    const all = item.pickTargets === 'all';
     frag.append(
       h(
         'div',
         { class: 'guide pick', role: 'group', 'aria-labelledby': 'pick-title' },
         h('h2', { id: 'pick-title', class: 'guide-title', tabindex: '-1', text: t('player.pickTitle') }),
         h('p', { class: 'pick-help', text: t(`player.pickHelp.${osKey}`) }),
-        h('p', { class: 'note' }, icon('lock', 'i i-sm'), h('span', { text: t('player.permission') })),
         h(
           'div',
           { class: 'actions' },
-          h('button', { class: 'btn btn-primary btn-xl', type: 'button', id: 'pick-btn', 'data-action': 'pick', onclick: () => saveToPlayer(item, { fromPickStep: true }) }, icon('usb'), t('player.pick')),
-          h('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { item.picking = false; saveToComputer(item); } }, t('done.saveToComputer'))
+          h('button', { class: 'btn btn-primary btn-xl', type: 'button', id: 'pick-btn', 'data-action': 'pick', onclick: () => saveToPlayer(all ? null : item, { fromPickStep: true }) }, icon('usb'), t('player.pick')),
+          h('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { item.picking = false; saveToComputer(all ? null : item); } }, t('done.saveToComputer')),
+          notNow()
         )
       )
     );
     return frag;
   }
 
-  const doneCount = items.filter((it) => it.status === 'done').length;
-  const actions = h('div', { class: 'actions' });
-  if (save.canSaveToFolder()) {
-    actions.append(
-      h('button', { class: 'btn btn-primary btn-xl', type: 'button', id: 'save-primary', 'data-action': 'save-player', onclick: () => saveToPlayer(item) }, icon('usb'), t('done.saveToPlayer')),
-      h('button', { class: 'btn btn-quiet', type: 'button', 'data-action': 'save-download', onclick: () => saveToComputer(item) }, t('done.saveToComputer'))
-    );
-  } else {
-    actions.append(
-      h('button', { class: 'btn btn-primary btn-xl', type: 'button', id: 'save-primary', 'data-action': 'save-download', onclick: () => saveToComputer(item) }, icon('save'), t('done.save'))
-    );
-    if (save.canShare(item.result.blob, item.outName)) {
-      actions.append(
-        h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => save.share(item.result.blob, item.outName).catch(() => {}) }, icon('share'), t('done.share'))
-      );
-    }
-  }
-  frag.append(actions);
-  if (doneCount > 1 && !item.saved) {
+  if (item.saving) {
     frag.append(
       h(
         'div',
-        { class: 'actions' },
-        h('button', { class: 'btn btn-secondary', type: 'button', onclick: () => (save.canSaveToFolder() ? saveToPlayer(null) : saveToComputer(null)) }, t('done.saveAll', { n: doneCount }))
+        { class: 'status', role: 'status' },
+        h('div', { class: 'meter indeterminate', 'aria-hidden': 'true' }, h('i')),
+        h('p', { class: 'status-line', text: t('player.saving') })
       )
     );
+    return frag;
   }
 
-  if (item.saved) {
-    if (item.saved.where === 'error') {
-      frag.append(h('div', { class: 'saved warn', role: 'alert', tabindex: '-1' }, icon('alert', 'i'), h('span', {}, h('b', { text: t('err.title.save-failed') }), ' ', t('err.body.save-failed'))));
+  // Save first; once everything ready is saved, "convert another" leads.
+  const pending = unsaved();
+  const toSave = pending.length;
+  const batch = toSave >= 2;
+  const toPlayer = save.canSaveToFolder();
+  const allSaved = toSave === 0;
+  const actions = h('div', { class: 'actions' });
+  if (!allSaved) {
+    const target = batch ? null : pending.includes(item) ? item : pending[0];
+    if (toPlayer) {
+      actions.append(
+        h('button', { class: 'btn btn-primary btn-xl', type: 'button', id: 'save-primary', 'data-action': 'save-player', onclick: () => saveToPlayer(target) }, icon('usb'), batch ? t('done.saveAllPlayer', { n: toSave }) : t('done.saveToPlayer')),
+        h('button', { class: 'btn btn-quiet', type: 'button', 'data-action': 'save-download', onclick: () => saveToComputer(target) }, batch ? t('done.saveAllComputer', { n: toSave }) : t('done.saveToComputer'))
+      );
     } else {
-      const msg = item.saved.where === 'player' ? t('saved.player', { where: item.saved.label }) : t('saved.downloads');
-      frag.append(h('div', { class: 'saved', tabindex: '-1' }, icon('check', 'i'), h('span', { text: msg })));
+      actions.append(
+        h('button', { class: 'btn btn-primary btn-xl', type: 'button', id: 'save-primary', 'data-action': 'save-download', onclick: () => saveToComputer(target) }, icon('save'), batch ? t('done.saveAllComputer', { n: toSave }) : t('done.save'))
+      );
+      if (!batch && save.canShare(item.result.blob, item.outName)) {
+        actions.append(h('button', { class: 'btn btn-quiet', type: 'button', onclick: () => save.share(item.result.blob, item.outName).catch(() => {}) }, icon('share', 'i i-sm'), t('done.share')));
+      }
+    }
+  }
+  if (item.saveNote) frag.append(h('div', { class: 'saved warn', role: 'alert', tabindex: '-1' }, icon('alert', 'i'), h('span', { text: t(item.saveNote) })));
+
+  if (item.saved && item.saved.where === 'error') {
+    frag.append(h('div', { class: 'saved warn', role: 'alert', tabindex: '-1' }, icon('alert', 'i'), h('span', {}, h('b', { text: t('err.title.save-failed') }), ' ', t('err.body.save-failed'))));
+  } else if (item.saved) {
+    const n = item.saved.batch || 1;
+    const where = item.saved.where;
+    const msg =
+      where === 'downloads'
+        ? t('saved.downloads')
+        : item.saved.certainty === 'player'
+          ? t('saved.player', { where: item.saved.label })
+          : t('saved.folder', { where: item.saved.label });
+    frag.append(h('div', { class: 'saved', tabindex: '-1' }, icon('check', 'i'), h('span', { text: msg })));
+    if (!allSaved) {
+      frag.append(h('p', { class: 'work-meta remaining', text: t('done.remaining', { n: toSave }) }));
+    } else {
       const guide = h('div', { class: 'guide' });
-      renderGuideInto(guide, item, item.saved.where === 'player');
+      renderGuideInto(guide, item, where === 'player', 2, n);
       frag.append(guide);
     }
   }
+  frag.append(actions);
 
-  frag.append(
-    h(
-      'div',
-      { class: 'actions' },
-      h('button', { class: 'btn btn-quiet', type: 'button', 'data-action': 'choose' }, icon('plus', 'i i-sm'), t('done.another'))
-    )
-  );
+  const another = h('button', { class: allSaved && item.saved ? 'btn btn-primary btn-xl' : 'btn btn-quiet', type: 'button', 'data-action': 'choose' }, icon('plus', allSaved && item.saved ? 'i' : 'i i-sm'), t('done.another'));
+  if (allSaved && item.saved) {
+    // Saved: the next step is another video; saving again stays possible.
+    actions.prepend(another);
+    actions.append(
+      h('button', { class: 'btn btn-quiet', type: 'button', 'data-action': toPlayer ? 'save-player' : 'save-download', onclick: () => (toPlayer ? saveToPlayer(item) : saveToComputer(item)) }, toPlayer ? t('done.saveToPlayer') : t('done.save'))
+    );
+  } else {
+    frag.append(h('div', { class: 'actions' }, another));
+  }
   return frag;
 }
 
-function renderGuideInto(container, item, onPlayer = false, level = 2) {
+function renderGuideInto(container, item, onPlayer = false, level = 2, count = 1) {
   container.replaceChildren();
   const isPhone = save.platform !== 'computer';
   container.append(h(`h${level}`, { class: 'guide-title', text: onPlayer ? t('copy.titleDone') : t('copy.title') }));
   const ol = h('ol');
   const osKey = save.os === 'mac' ? 'mac' : save.os === 'windows' ? 'windows' : 'other';
   if (isPhone && !onPlayer) {
+    // On a phone the computer steps would only confuse: one honest step.
     ol.append(h('li', { text: t('copy.phone') }));
+    container.append(ol);
+    return;
   }
   if (!onPlayer) {
     ol.append(h('li', { text: t('copy.connect') }));
-    ol.append(h('li', { text: t(`copy.open.${osKey}`) }));
-    ol.append(h('li', { text: t('copy.drag', { name: item.outName || item.name }) }));
+    ol.append(h('li', { text: t(`copy.open.${osKey}`, { name: item.outName || item.name }) }));
+    ol.append(h('li', { text: t(`copy.paste.${osKey}`) }));
+    if (count > 1) ol.append(h('li', { text: t('copy.many', { n: count }) }));
   }
   ol.append(h('li', { text: t(`copy.eject.${osKey}`) }));
-  ol.append(h('li', { text: t('copy.watch', { title: titleOf(item.outName || item.title) }) }));
+  ol.append(h('li', { text: count > 1 ? t('copy.watchMany', { n: count }) : t('copy.watch', { title: titleOf(item.outName || item.title) }) }));
   container.append(ol);
+}
+
+function renderFaqHow(container) {
+  container.replaceChildren(
+    ...['faq.how.chrome', 'faq.how.mac', 'faq.how.windows'].map((k) => h('p', { class: 'answer-part', text: t(k) }))
+  );
 }
 
 function renderError(item) {
@@ -701,7 +808,7 @@ function renderError(item) {
     h(
       'div',
       { class: 'done-head' },
-      h('div', { class: isInfo ? 'done-mark' : 'err-mark', 'aria-hidden': 'true' }, icon(isInfo ? 'check' : 'alert', '')),
+      doneMark(item, isInfo ? 'ok' : 'bad'),
       h('h1', { class: 'work-title display', tabindex: '-1', id: 'work-title', text: t(`err.title.${key}`) })
     )
   );
@@ -714,15 +821,17 @@ function renderError(item) {
   const actions = h('div', { class: 'actions' });
   const canRetry = ['internal', 'out-of-memory', 'engine-unavailable', 'save-failed'].includes(key);
   if (canRetry) {
-    actions.append(h('button', { class: 'btn btn-primary', type: 'button', 'data-action': 'retry', onclick: () => retry(item) }, icon('retry'), t('err.retry')));
+    actions.append(h('button', { class: 'btn btn-primary btn-xl', type: 'button', 'data-action': 'retry', onclick: () => retry(item) }, icon('retry'), t('err.retry')));
   }
   actions.append(
-    h('button', { class: canRetry ? 'btn btn-secondary' : 'btn btn-primary', type: 'button', 'data-action': 'choose' }, icon('film'), t('err.other'))
+    h('button', { class: canRetry ? 'btn btn-quiet' : 'btn btn-primary btn-xl', type: 'button', 'data-action': 'choose' }, icon('film', canRetry ? 'i i-sm' : 'i'), t('err.other'))
   );
   if (items.length > 1) actions.append(h('button', { class: 'btn btn-quiet', type: 'button', onclick: () => removeItem(item) }, t('item.remove')));
   frag.append(actions);
 
   if (!isInfo) {
+    const code = [item.error?.code || 'internal', engineStatus.mode].filter(Boolean).join(' · ');
+    frag.append(h('p', { class: 'err-code', text: t('err.code', { code }) }));
     const detailText = diagnostics(item);
     const pre = h('pre', { text: detailText });
     const copyBtn = h('button', { class: 'btn btn-secondary', type: 'button' }, icon('copy', 'i i-sm'), t('err.copy'));
@@ -773,7 +882,9 @@ function renderQueue() {
     return;
   }
   const done = items.filter((it) => it.status === 'done').length;
-  el.queueSummary.textContent = t('list.summary', { done, total: items.length });
+  const bad = items.filter((it) => it.status === 'error').length;
+  const pending = items.length - done - bad;
+  el.queueSummary.textContent = !pending && bad ? t('list.summaryErrors', { done, bad }) : t('list.summary', { done, total: items.length });
   el.queueList.replaceChildren(...items.map((it) => h('li', { 'data-id': String(it.id) }, queueRow(it))));
 }
 
@@ -797,7 +908,14 @@ function queueRow(it) {
       h('div', { class: 'q-meter', style: { '--p': String(it.progress || 0) } }, h('i'))
     );
   } else if (it.status === 'done') {
-    state.textContent = it.saved && it.saved.where !== 'error' ? (it.saved.where === 'player' ? t('saved.player', { where: it.saved.label }) : t('saved.downloads')) : t('done.title');
+    state.textContent =
+      it.saved && it.saved.where !== 'error'
+        ? it.saved.where === 'downloads'
+          ? t('saved.downloads')
+          : it.saved.certainty === 'player'
+            ? t('saved.player', { where: it.saved.label })
+            : t('saved.folder', { where: it.saved.label })
+        : t('done.title');
     badge = h('span', { class: 'q-badge ok', 'aria-hidden': 'true' }, icon('check', ''));
   } else if (it.status === 'error') {
     state.textContent = t(`err.title.${errorKey(it.error)}`);
@@ -816,7 +934,7 @@ function queueRow(it) {
       },
     },
     thumb,
-    h('div', { class: 'q-text' }, h('div', { class: 'q-name', text: it.title }), state),
+    h('div', { class: 'q-text' }, h('div', { class: 'q-name', text: it.status === 'error' ? it.name : it.title }), state),
     badge || h('span')
   );
 }
@@ -860,30 +978,33 @@ function drawDevice() {
   }
 }
 
-function renderPlayCaption() {
-  const show = current?.status === 'done';
-  el.playCaption.hidden = !show;
-  if (!show) return;
-  const playing = preview && preview.item === current && preview.playing;
-  el.playCaption.replaceChildren(icon(playing ? 'pause' : 'play', 'i i-sm'), h('span', { text: playing ? t('done.pause') : t('done.play') }));
+/** The fit choice only matters for vertical video: a 16:9 picture loses a
+ * thin band either way, a 9:16 one is either a narrow strip or mostly cut. */
+function fitRelevant(item) {
+  const d = item?.analysis?.display;
+  return !!(item && item.analysis?.kind === 'video' && d && d.height > d.width * 1.05);
 }
 
 function renderFit() {
   const item = current;
-  const d = item?.analysis?.display;
-  const relevant =
-    item &&
-    item.analysis?.kind === 'video' &&
-    d &&
-    Math.abs(d.width / d.height / (TARGET.width / TARGET.height) - 1) > 0.05 &&
-    ['queued', 'converting', 'done'].includes(item.status);
-  el.fit.hidden = !relevant;
-  if (!relevant) return;
-  el.fit.querySelectorAll('button[data-fit]').forEach((b) => {
-    const on = b.dataset.fit === item.fit;
-    b.setAttribute('aria-checked', on ? 'true' : 'false');
-    b.tabIndex = on ? 0 : -1;
-  });
+  const relevant = fitRelevant(item);
+  const choosing = relevant && ['queued', 'converting'].includes(item.status);
+  el.fit.hidden = !choosing;
+  el.fitRedo.hidden = !(relevant && item.status === 'done');
+  if (choosing) {
+    const portrait = item.analysis.display.height > item.analysis.display.width;
+    el.fit.classList.toggle('portrait', portrait);
+    el.fit.querySelectorAll('button[data-fit]').forEach((b) => {
+      const on = b.dataset.fit === item.fit;
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+      b.tabIndex = on ? 0 : -1;
+    });
+  }
+  if (!el.fitRedo.hidden) {
+    const other = item.fit === 'fit' ? 'fill' : 'fit';
+    el.fitRedo.textContent = t(other === 'fill' ? 'fit.redo.fill' : 'fit.redo.fit');
+    el.fitRedo.onclick = () => setFit(item, other);
+  }
 }
 
 function updateTitle() {
@@ -970,8 +1091,7 @@ function bindEvents() {
     el.fit.querySelector(`button[data-fit="${next}"]`)?.focus();
   });
 
-  el.play.addEventListener('click', () => togglePreview().then(renderPlayCaption));
-  el.playCaption.addEventListener('click', () => togglePreview().then(renderPlayCaption));
+  el.play.addEventListener('click', togglePreview);
 
   // Drag and drop anywhere on the page.
   let depth = 0;
@@ -992,12 +1112,22 @@ function bindEvents() {
     depth = Math.max(0, depth - 1);
     if (!depth) el.overlay.hidden = true;
   });
-  window.addEventListener('drop', (e) => {
+  window.addEventListener('drop', async (e) => {
     if (!hasFiles(e)) return;
     e.preventDefault();
     depth = 0;
     el.overlay.hidden = true;
-    addFiles(e.dataTransfer.files);
+    // A dropped folder: convert the videos inside it (and its subfolders).
+    const entries = Array.from(e.dataTransfer.items || [])
+      .map((it) => (typeof it.webkitGetAsEntry === 'function' ? it.webkitGetAsEntry() : null))
+      .filter(Boolean);
+    if (entries.some((en) => en.isDirectory)) {
+      const files = [];
+      for (const en of entries) await collectEntry(en, files, 0);
+      addFiles(files);
+    } else {
+      addFiles(e.dataTransfer.files);
+    }
   });
 
   window.addEventListener('paste', (e) => {
@@ -1021,6 +1151,26 @@ function bindEvents() {
   });
 }
 
+const MEDIA_EXT = /\.(mp4|m4v|mov|qt|avi|divx|xvid|wmv|asf|mkv|webm|flv|f4v|mpg|mpeg|mpe|m1v|m2v|vob|vro|ts|mts|m2ts|m2t|trp|tod|mod|3gp|3g2|ogv|ogg|dv|mxf|rm|rmvb|gif|amv|mp3|m4a|aac|wav|wma|flac|opus|amr|aif|aiff)$/i;
+
+/** Walk a dropped folder; files at the top level are kept as they are. */
+async function collectEntry(entry, out, level) {
+  if (out.length >= 200 || entry.name.startsWith('.')) return;
+  if (entry.isFile) {
+    const file = await new Promise((resolve) => entry.file(resolve, () => resolve(null)));
+    if (file && (level === 0 || MEDIA_EXT.test(file.name))) out.push(file);
+    return;
+  }
+  if (!entry.isDirectory || level > 3) return;
+  const reader = entry.createReader();
+  for (;;) {
+    const batch = await new Promise((resolve) => reader.readEntries(resolve, () => resolve([])));
+    if (!batch.length) break;
+    batch.sort((a, b) => a.name.localeCompare(b.name, 'es', { numeric: true }));
+    for (const child of batch) await collectEntry(child, out, level + 1);
+  }
+}
+
 // ------------------------------------------------------------ boot
 
 /** Serve the page through sw.js so it is cross-origin isolated, which the
@@ -1038,7 +1188,7 @@ async function ensureIsolation() {
     if (wasControlled) return; // headers didn't take; carry on single-threaded
     await Promise.race([
       new Promise((r) => navigator.serviceWorker.addEventListener('controllerchange', r, { once: true })),
-      new Promise((r) => setTimeout(r, 3500)),
+      new Promise((r) => setTimeout(r, 2500)),
     ]);
     if (!navigator.serviceWorker.controller || touched || items.length) return;
     let last = 0;

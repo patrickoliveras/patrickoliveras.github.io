@@ -48,7 +48,7 @@ const svg = `
     <clipPath id="dv-glass-clip"><rect x="${GLASS.x}" y="${GLASS.y}" width="${GLASS.w}" height="${GLASS.h}" rx="${GLASS.r}"/></clipPath>
   </defs>
 
-  ${KEYS.map((k) => `<rect x="${k.x.toFixed(1)}" y="${BODY.y - 4}" width="${k.w.toFixed(1)}" height="10" rx="3" fill="url(#dv-key)"/>`).join('')}
+  ${KEYS.map((k) => `<rect x="${k.x.toFixed(1)}" y="${BODY.y - 2.4}" width="${k.w.toFixed(1)}" height="8" rx="2.5" fill="url(#dv-key)"/>`).join('')}
 
   <rect x="${BODY.x}" y="${BODY.y}" width="${BODY.w}" height="${BODY.h}" rx="${BODY.r}" fill="url(#dv-edge)"/>
   <rect x="${BODY.x + 0.75}" y="${BODY.y + 0.75}" width="${BODY.w - 1.5}" height="${BODY.h - 1.5}" rx="${BODY.r - 0.75}" fill="none" stroke="#6b645e" stroke-opacity="0.55" stroke-width="1.5"/>

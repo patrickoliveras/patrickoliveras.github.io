@@ -106,7 +106,7 @@ async function fetchWithProgress(url, expectedBytes, onProgress) {
 
 export function createEngine({ baseURL = new URL('./', import.meta.url), onLoadProgress, onLoadState } = {}) {
   const modules = new Map(); // mode -> Promise<WebAssembly.Module>
-  const preferred = threadsAvailable() ? 'mt' : 'st';
+  let preferred = threadsAvailable() ? 'mt' : 'st';
 
   function load(mode) {
     if (!modules.has(mode)) {
@@ -125,6 +125,10 @@ export function createEngine({ baseURL = new URL('./', import.meta.url), onLoadP
         const bytes = await fetchWithProgress(url, CORES[mode].wasmBytes, (f) => onLoadProgress?.(mode, f));
         onLoadState?.(mode, 'compiling');
         const module = await WebAssembly.compile(bytes);
+        // Warm the engine's scripts too, so they're cached for offline use.
+        for (const name of CORES[mode].pthreads ? ['ffmpeg-core.js', 'ffmpeg-core.worker.js'] : ['ffmpeg-core.js']) {
+          fetch(new URL(CORES[mode].dir + name, baseURL)).catch(() => {});
+        }
         onLoadState?.(mode, 'ready');
         return module;
       } catch (err) {
@@ -211,6 +215,10 @@ export function createEngine({ baseURL = new URL('./', import.meta.url), onLoadP
       worker.onmessageerror = () => finish(new EngineError('crashed', 'message error', { lines, mode }));
 
       kick();
+      // Test switch: ?debug-break=mt-crash or mt-stall exercises the fallback.
+      const debugBreak = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('debug-break') : null;
+      if (debugBreak === 'mt-crash' && mode === 'mt') return finish(new EngineError('crashed', 'debug: simulated crash', { lines, mode }));
+      if (debugBreak === 'mt-stall' && mode === 'mt') return; // never starts; the watchdog must notice
       worker.postMessage({
         type: 'run',
         coreURL: new URL('ffmpeg-core.js', dir).href,
@@ -227,5 +235,19 @@ export function createEngine({ baseURL = new URL('./', import.meta.url), onLoadP
     });
   }
 
-  return { preferred, load, run, threads: preferred === 'mt' ? decodeThreads() : 1 };
+  return {
+    get preferred() {
+      return preferred;
+    },
+    /** Circuit breaker: after the threaded build fails once, use the other for the rest of the visit. */
+    markBroken(mode) {
+      if (mode === 'mt' && preferred === 'mt') {
+        preferred = 'st';
+        load('st').catch(() => {});
+      }
+    },
+    load,
+    run,
+    threads: decodeThreads(),
+  };
 }

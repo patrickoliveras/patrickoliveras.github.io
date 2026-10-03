@@ -92,17 +92,28 @@ async function permitted(handle, ask) {
   }
 }
 
+// Folders the computer itself makes: Windows library folders carry
+// desktop.ini, macOS home folders carry .localized. Never the player.
+const COMPUTER_MARKER = /^(desktop\.ini|\.localized)$/i;
+// What sits at the root of a removable disk: Windows' System Volume
+// Information, and the folders macOS writes onto FAT disks.
+const DISK_ROOT_MARKER = /^(system volume information|\.spotlight-v100|\.fseventsd|\.trashes)$/i;
+
 /** Look inside a chosen folder to decide where the video belongs. */
 export async function inspect(handle) {
   const names = [];
   let videos = null;
   let internal = false;
+  let computer = false;
+  let diskRoot = false;
   let playerish = 0;
   let n = 0;
   for await (const entry of handle.values()) {
     if (++n > 400) break;
     names.push(entry.name);
     if (entry.kind === 'file' && INTERNAL_MARKER.test(entry.name)) internal = true;
+    if (COMPUTER_MARKER.test(entry.name)) computer = true;
+    if (DISK_ROOT_MARKER.test(entry.name)) diskRoot = true;
     if (entry.kind === 'directory') {
       if (VIDEO_DIR.test(entry.name) && !videos) videos = entry;
       if (PLAYER_DIRS.test(entry.name)) playerish++;
@@ -111,9 +122,11 @@ export async function inspect(handle) {
   return {
     names,
     internal,
+    computer,
+    diskRoot,
     videos,
     isVideoFolder: VIDEO_DIR.test(handle.name),
-    looksLikePlayer: internal || playerish >= 2 || (!!videos && n < 60),
+    looksLikePlayer: internal || diskRoot || playerish >= 2 || (!!videos && n < 60),
   };
 }
 
@@ -128,16 +141,20 @@ export async function pickFolder() {
  * Where to write inside the chosen folder. Returns {dir, label} or
  * {warning:'internal'} when it looks like the player's internal memory.
  */
-export async function resolveTarget(root, { allowInternal = false } = {}) {
+export async function resolveTarget(root, { allowInternal = false, allowComputer = false } = {}) {
   const info = await inspect(root);
   if (info.internal && !allowInternal) return { warning: 'internal', root };
-  if (info.isVideoFolder) return { dir: root, label: root.name };
-  if (info.videos) return { dir: info.videos, label: `${root.name} › ${info.videos.name}` };
-  if (info.looksLikePlayer) {
-    const dir = await root.getDirectoryHandle('Videos', { create: true });
-    return { dir, label: `${root.name} › Videos` };
+  // How sure are we this is the player? 'player' (a disk's root, or the
+  // player's own folders), 'maybe' (a clean folder called Videos), or a
+  // folder on the computer, which gets a warning first.
+  if (info.computer && !allowComputer) return { warning: 'computer', root };
+  if (!info.computer && info.looksLikePlayer) {
+    const dir = info.videos || (await root.getDirectoryHandle('Videos', { create: true }));
+    return { dir, label: `${root.name} › ${dir.name}`, certainty: 'player' };
   }
-  return { dir: root, label: root.name };
+  if (!info.computer && info.isVideoFolder) return { dir: root, label: root.name, certainty: 'maybe' };
+  if (!allowComputer) return { warning: 'computer', root };
+  return { dir: root, label: root.name, certainty: 'other' };
 }
 
 /** The remembered folder if it's still there and we may write to it. */

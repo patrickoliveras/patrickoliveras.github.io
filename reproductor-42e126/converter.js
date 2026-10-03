@@ -65,13 +65,22 @@ async function runShort(engine, job) {
   for (const mode of modes) {
     try {
       const args = typeof job.args === 'function' ? job.args(mode) : job.args;
-      return await engine.run(mode, { stallMs: 45000, ...job, args });
+      return await engine.run(mode, { stallMs: debugStall() || 30000, ...job, args });
     } catch (err) {
       if (err instanceof EngineError && (err.code === 'cancelled' || err.code === 'wasm-unsupported')) throw err;
+      if (err instanceof EngineError && RETRYABLE_ENGINE.has(err.code)) engine.markBroken?.(mode);
       last = err;
     }
   }
   throw last;
+}
+
+function debugStall() {
+  try {
+    return Number(new URLSearchParams(location.search).get('debug-stall')) || 0;
+  } catch (_) {
+    return 0;
+  }
 }
 
 const threadsFor = (engine, mode) => (mode === 'mt' ? Math.min(2, engine.threads) : 1);
@@ -83,13 +92,13 @@ const NOT_MEDIA_KINDS = new Set(['image', 'document', 'archive', 'text']);
  * Resolves {kind:'video'|'audio-only'|'already-amv', probe, duration, display,
  * thumbnail (PNG bytes or null), cover (image bytes or null)}.
  */
-export async function analyze(engine, file, { signal } = {}) {
+export async function analyze(engine, file, { signal, forceConvert = false } = {}) {
   try {
     if (!file || file.size === 0) throw new ConvertError('empty');
     const head = new Uint8Array(await file.slice(0, 4096).arrayBuffer());
     const kind = sniff(head, file.name);
     if (kind === 'empty') throw new ConvertError('empty');
-    if (kind === 'amv') return { kind: 'already-amv', duration: null };
+    if (kind === 'amv' && !forceConvert) return { kind: 'already-amv', duration: null };
     if (NOT_MEDIA_KINDS.has(kind)) throw new ConvertError('not-media', { sniffed: kind });
 
     const res = await runShort(engine, {
@@ -301,6 +310,7 @@ export async function convert(engine, file, analysis, options = {}) {
       if (err instanceof EngineError) {
         if (err.code === 'cancelled') throw new ConvertError('cancelled');
         if (RETRYABLE_ENGINE.has(err.code)) {
+          engine.markBroken?.(attempt.mode);
           lastError = toConvertError(err);
           continue;
         }

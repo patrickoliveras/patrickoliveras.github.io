@@ -49,8 +49,8 @@ export function createScreen(canvas) {
     const cx = W / 2;
     const cy = H * 0.44;
     const glow = ctx.createRadialGradient(cx, cy, 20, cx, cy, W * 0.45);
-    glow.addColorStop(0, `rgba(160, 120, 255, ${0.16 + a * 0.08})`);
-    glow.addColorStop(0.5, `rgba(255, 150, 80, ${0.06 + a * 0.04})`);
+    glow.addColorStop(0, `rgba(240, 150, 60, ${0.18 + a * 0.08})`);
+    glow.addColorStop(0.5, `rgba(240, 150, 60, ${0.05 + a * 0.03})`);
     glow.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, W, H);
@@ -58,29 +58,30 @@ export function createScreen(canvas) {
     const s = 150 + a * 4;
     const x = cx - s / 2;
     const y = cy - s / 2;
+    const tile = ctx.createLinearGradient(x, y, x + s, y + s);
+    tile.addColorStop(0, '#E7881C');
+    tile.addColorStop(1, '#E5A355');
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,0.5)';
     ctx.shadowBlur = 24;
     ctx.shadowOffsetY = 8;
     roundRect(x, y, s, s, s * 0.24);
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = tile;
     ctx.fill();
     ctx.restore();
 
-    // play triangle with the tile's yellow-to-violet gradient
-    const g = ctx.createLinearGradient(x + s * 0.3, y + s * 0.25, x + s * 0.75, y + s * 0.78);
-    g.addColorStop(0, '#ffc93c');
-    g.addColorStop(0.45, '#ff7a59');
-    g.addColorStop(1, '#7b5cff');
+    // solid white play triangle, softly rounded
     ctx.save();
+    ctx.fillStyle = '#ffffff';
+    ctx.strokeStyle = '#ffffff';
     ctx.lineJoin = 'round';
-    ctx.lineWidth = s * 0.09;
-    ctx.strokeStyle = g;
+    ctx.lineWidth = s * 0.06;
     ctx.beginPath();
-    ctx.moveTo(x + s * 0.36, y + s * 0.27);
-    ctx.lineTo(x + s * 0.74, y + s * 0.5);
-    ctx.lineTo(x + s * 0.36, y + s * 0.73);
+    ctx.moveTo(x + s * 0.38, y + s * 0.29);
+    ctx.lineTo(x + s * 0.72, y + s * 0.5);
+    ctx.lineTo(x + s * 0.38, y + s * 0.71);
     ctx.closePath();
+    ctx.fill();
     ctx.stroke();
     ctx.restore();
 
@@ -141,15 +142,19 @@ export function createScreen(canvas) {
       d[i + 2] = y * 0.93;
     }
     gc.putImageData(img, 0, 0);
-    return { color: out, gray };
+    // Where the picture sits on the screen, so the reveal sweeps the picture
+    // (not the black bars) in step with the progress bar.
+    const r = box.crop ? { x: 0, y: 0, w: W, h: H } : { x: box.x * sx, y: box.y * sx, w: box.scaleW * sx, h: box.scaleH * sx };
+    return { color: out, gray, r };
   }
 
   function drawReveal(t) {
     if (!thumb) return drawChecking(t);
     shownReveal += (reveal - shownReveal) * (reduceMotion() ? 1 : 0.12);
-    const edge = Math.round(shownReveal * W);
+    const r = thumb.r;
+    const edge = Math.round(r.x + shownReveal * r.w);
     ctx.drawImage(thumb.gray, 0, 0);
-    if (edge > 0) {
+    if (edge > r.x) {
       ctx.save();
       ctx.beginPath();
       ctx.rect(0, 0, edge, H);
@@ -157,13 +162,13 @@ export function createScreen(canvas) {
       ctx.drawImage(thumb.color, 0, 0);
       ctx.restore();
     }
-    if (edge > 0 && edge < W) {
+    if (edge > r.x && edge < r.x + r.w) {
       const g = ctx.createLinearGradient(edge - 26, 0, edge + 4, 0);
       g.addColorStop(0, 'rgba(242,196,107,0)');
       g.addColorStop(0.85, 'rgba(255,214,140,0.55)');
       g.addColorStop(1, 'rgba(255,240,210,0.95)');
       ctx.fillStyle = g;
-      ctx.fillRect(edge - 26, 0, 30, H);
+      ctx.fillRect(Math.max(r.x, edge - 26), r.y, Math.min(30, edge - r.x + 4), r.h);
     }
   }
 

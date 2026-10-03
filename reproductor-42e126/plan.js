@@ -463,14 +463,56 @@ export function createEta() {
 
 const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
 
+const MONTHS = {
+  es: ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'],
+  en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+};
+
+/**
+ * Phone and WhatsApp names all look alike and get cut off on the player's
+ * narrow list; turn the common ones into a short date. Others pass through.
+ *   "WhatsApp Video 2026-09-28 at 18.22.31" -> "WhatsApp 28 sep 2026 18.22"
+ *   "VID-20261001-WA0007"                   -> "WhatsApp 1 oct 2026 (7)"
+ *   "VID_20260915_183214", "PXL_20260915_183214123" -> "Video 15 sep 2026 18.32"
+ */
+export function friendlyBase(base, lang = 'es') {
+  const months = MONTHS[lang] || MONTHS.es;
+  const date = (y, mo, d) => {
+    const m = Number(mo);
+    if (!(m >= 1 && m <= 12) || !(Number(d) >= 1 && Number(d) <= 31)) return null;
+    return `${Number(d)} ${months[m - 1]} ${y}`;
+  };
+  let m = /^WhatsApp (?:Video|Vídeo|Audio) (\d{4})-(\d{2})-(\d{2}) (?:at|a las) (\d{1,2})\.(\d{2})\.\d{2}(?: ?([AP]M))?(?: \((\d+)\))?$/i.exec(base);
+  if (m) {
+    const dt = date(m[1], m[2], m[3]);
+    if (dt) {
+      let hh = Number(m[4]);
+      if (m[6]) hh = (hh % 12) + (/p/i.test(m[6]) ? 12 : 0);
+      return `WhatsApp ${dt} ${hh}.${m[5]}${m[7] ? ` (${m[7]})` : ''}`;
+    }
+  }
+  m = /^VID-(\d{4})(\d{2})(\d{2})-WA(\d{4})$/i.exec(base);
+  if (m) {
+    const dt = date(m[1], m[2], m[3]);
+    if (dt) return `WhatsApp ${dt} (${Number(m[4])})`;
+  }
+  m = /^(?:VID|PXL|video)[-_]?(\d{4})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})\d{2,}(?:[-_~][\w-]*)?$/i.exec(base);
+  if (m) {
+    const dt = date(m[1], m[2], m[3]);
+    if (dt) return `Video ${dt} ${m[4]}.${m[5]}`;
+  }
+  return base;
+}
+
 /**
  * A name that is safe on the player's FAT32 card and readable on its screen.
  * Keeps Spanish letters, drops emoji, symbols and characters FAT32 forbids.
  */
-export function outputName(originalName, maxBase = 60) {
+export function outputName(originalName, maxBase = 60, lang = 'es') {
   let base = String(originalName ?? '').normalize('NFC');
   base = base.replace(/^.*[\\/]/, ''); // just the file name
   base = base.replace(/\.[A-Za-z0-9]{1,5}$/, ''); // drop one extension
+  base = friendlyBase(base.trim(), lang);
   base = base
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/[\\/:*?"<>|]/g, ' ')

@@ -3,7 +3,7 @@
  * cross-origin isolated and can use the fast multi-threaded converter.
  * Everything the page loads is same-origin, so require-corp costs nothing. */
 
-const VERSION = 'ab4029f0ccda';
+const VERSION = 'de2e784b8fde';
 const SHELL_CACHE = `shell-${VERSION}`;
 const CORE_CACHE = 'core-ffmpeg-0.12.10'; // immutable: the path changes if the core does
 
@@ -30,26 +30,46 @@ const SHELL = [
   'fonts/atkinson-latin.woff2',
 ];
 
+// Small engine scripts, fetched only when a conversion starts: cache them up
+// front so a visitor who never converted can still convert offline later.
+const CORE_SCRIPTS = [
+  'vendor/ffmpeg-0.12.10-st/ffmpeg-core.js',
+  'vendor/ffmpeg-0.12.10-mt/ffmpeg-core.js',
+  'vendor/ffmpeg-0.12.10-mt/ffmpeg-core.worker.js',
+];
+
 const scopePath = new URL(self.registration.scope).pathname;
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    (async () => {
-      const cache = await caches.open(SHELL_CACHE);
-      // Fetch fresh copies; a stale HTTP cache must not seed a new version.
-      await Promise.all(
-        SHELL.map(async (path) => {
-          try {
-            const res = await fetch(new Request(path, { cache: 'reload' }));
-            if (res.ok) await cache.put(path, res);
-          } catch (_) {
-            // offline during install: the network-first path fills it later
-          }
-        })
-      );
-      await self.skipWaiting();
-    })()
+async function precache() {
+  const cache = await caches.open(SHELL_CACHE);
+  await Promise.all(
+    SHELL.map(async (path) => {
+      try {
+        if (await cache.match(path)) return;
+        const res = await fetch(new Request(path, { cache: 'reload' }));
+        if (res.ok) await cache.put(path, res);
+      } catch (_) {
+        // offline: network-first fills it in later
+      }
+    })
   );
+  const core = await caches.open(CORE_CACHE);
+  await Promise.all(
+    CORE_SCRIPTS.map(async (path) => {
+      const url = new URL(path, self.registration.scope).href;
+      try {
+        if (await core.match(url)) return;
+        const res = await fetch(new Request(path, { cache: 'reload' }));
+        if (res.ok) await core.put(url, res);
+      } catch (_) {}
+    })
+  );
+}
+
+// Take over at once: the page reloads into cross-origin isolation as soon
+// as this worker controls it, so nothing here waits on the network.
+self.addEventListener('install', () => {
+  self.skipWaiting();
 });
 
 self.addEventListener('activate', (event) => {
@@ -62,6 +82,8 @@ self.addEventListener('activate', (event) => {
       await self.clients.claim();
     })()
   );
+  // Offline copies fill in the background; every page fetch also caches.
+  precache().catch(() => {});
 });
 
 function isolate(response) {
