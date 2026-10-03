@@ -3,7 +3,7 @@
  * cross-origin isolated and can use the fast multi-threaded converter.
  * Everything the page loads is same-origin, so require-corp costs nothing. */
 
-const VERSION = 'de2e784b8fde';
+const VERSION = 'ab8ce2c7132e';
 const SHELL_CACHE = `shell-${VERSION}`;
 const CORE_CACHE = 'core-ffmpeg-0.12.10'; // immutable: the path changes if the core does
 

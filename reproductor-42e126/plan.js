@@ -473,7 +473,8 @@ const MONTHS = {
  * narrow list; turn the common ones into a short date. Others pass through.
  *   "WhatsApp Video 2026-09-28 at 18.22.31" -> "WhatsApp 28 sep 2026 18.22"
  *   "VID-20261001-WA0007"                   -> "WhatsApp 1 oct 2026 (7)"
- *   "VID_20260915_183214", "PXL_20260915_183214123" -> "Video 15 sep 2026 18.32"
+ *   "VID_20260915_183214"                   -> "Video 15 sep 2026 18.32"
+ *   "PXL_20260925_044358369.TS" (UTC)       -> "Video 24 sep 2026 22.43" in Mexico
  */
 export function friendlyBase(base, lang = 'es') {
   const months = MONTHS[lang] || MONTHS.es;
@@ -496,10 +497,17 @@ export function friendlyBase(base, lang = 'es') {
     const dt = date(m[1], m[2], m[3]);
     if (dt) return `WhatsApp ${dt} (${Number(m[4])})`;
   }
-  m = /^(?:VID|PXL|video)[-_]?(\d{4})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})\d{2,}(?:[-_~][\w-]*)?$/i.exec(base);
-  if (m) {
-    const dt = date(m[1], m[2], m[3]);
-    if (dt) return `Video ${dt} ${m[4]}.${m[5]}`;
+  // Pixel adds suffixes such as ".TS", ".NIGHT" or "~2" (an edited copy).
+  m = /^(VID|PXL|video)[-_]?(\d{4})(\d{2})(\d{2})[-_]?(\d{2})(\d{2})\d{2,}(?:[-_~.][\w.~-]*)?$/i.exec(base);
+  if (m && date(m[2], m[3], m[4]) && Number(m[5]) < 24 && Number(m[6]) < 60) {
+    let [y, mo, d, hh, mi] = m.slice(2, 7).map(Number);
+    if (/^pxl$/i.test(m[1])) {
+      // Pixel names its files in UTC; other phones use the local time.
+      const at = new Date(Date.UTC(y, mo - 1, d, hh, mi));
+      [y, mo, d, hh, mi] = [at.getFullYear(), at.getMonth() + 1, at.getDate(), at.getHours(), at.getMinutes()];
+    }
+    const two = (n) => String(n).padStart(2, '0');
+    return `Video ${date(y, mo, d)} ${two(hh)}.${two(mi)}`;
   }
   return base;
 }
