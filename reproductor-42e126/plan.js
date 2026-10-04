@@ -539,16 +539,16 @@ export function outputName(originalName, maxBase = 60, lang = 'es') {
   return `${base}.amv`;
 }
 
+/** The nth choice of name for a video: the name itself, then "a (2).amv", "a (3).amv"… */
+export function numberedName(name, n) {
+  return n > 1 ? `${name.replace(/\.amv$/i, '')} (${n}).amv` : name;
+}
+
 /** Make names unique within a batch: "a.amv", "a (2).amv", "a (3).amv". */
 export function uniqueName(name, taken) {
   const lower = (s) => s.toLocaleLowerCase('es');
-  if (!taken.has(lower(name))) {
-    taken.add(lower(name));
-    return name;
-  }
-  const base = name.replace(/\.amv$/i, '');
-  for (let i = 2; ; i++) {
-    const candidate = `${base} (${i}).amv`;
+  for (let n = 1; ; n++) {
+    const candidate = numberedName(name, n);
     if (!taken.has(lower(candidate))) {
       taken.add(lower(candidate));
       return candidate;

@@ -41,7 +41,6 @@ let engine = null;
 let screen = null;
 let preview = null;
 let nextId = 1;
-const takenNames = new Set();
 const engineStatus = { state: 'idle', progress: 0, mode: null };
 let wakeLock = null;
 let baseTitle = document.title;
@@ -144,7 +143,7 @@ function addFiles(fileList) {
       file,
       name: file.name,
       title: titleOf(file.name),
-      outName: uniqueName(outputName(file.name, 60, getLang()), takenNames),
+      outName: uniqueName(outputName(file.name, 60, getLang()), takenNames()),
       status: 'checking',
       fit: 'fit',
       progress: null,
@@ -156,6 +155,7 @@ function addFiles(fileList) {
       result: null,
       error: null,
       saved: null,
+      written: null, // {name, size} last saved on the player, this visit
     };
     items.push(item);
     if (!current || current.status === 'error' || current.status === 'done') current = item;
@@ -165,16 +165,19 @@ function addFiles(fileList) {
   schedule();
 }
 
+/** Names this visit's other videos have, so a new one doesn't repeat them. */
+function takenNames(except = null) {
+  return new Set(items.filter((it) => it !== except).map((it) => it.outName.toLocaleLowerCase('es')));
+}
+
 function takeName(item, name) {
-  takenNames.delete(item.outName.toLocaleLowerCase('es'));
-  return uniqueName(outputName(name, 60, getLang()), takenNames);
+  return uniqueName(outputName(name, 60, getLang()), takenNames(item));
 }
 
 function removeItem(item) {
   item.abort?.abort();
   const i = items.indexOf(item);
   if (i >= 0) items.splice(i, 1);
-  takenNames.delete(item.outName.toLocaleLowerCase('es'));
   if (current === item) current = items[Math.min(i, items.length - 1)] || null;
   if (preview && preview.item === item) stopPreview();
   render({ focus: true });
@@ -349,7 +352,7 @@ function errorKey(err) {
     if (s === 'text') return 'document';
     return 'not-media';
   }
-  const known = ['empty', 'already-amv', 'unreadable', 'incomplete', 'undecodable', 'no-frames', 'out-of-memory', 'engine-unavailable', 'browser-unsupported', 'save-failed'];
+  const known = ['empty', 'unreadable', 'incomplete', 'undecodable', 'no-frames', 'out-of-memory', 'engine-unavailable', 'browser-unsupported', 'save-failed'];
   return known.includes(err.code) ? err.code : 'internal';
 }
 
@@ -389,8 +392,11 @@ async function saveToPlayer(item, { allowInternal = false, allowComputer = false
     owner.picking = false;
     render();
     for (const it of targets) {
-      await save.writeTo(target.dir, it.outName, it.result.blob);
-      it.saved = { where: target.certainty === 'other' ? 'folder' : 'player', label: target.label, certainty: target.certainty, batch: targets.length };
+      // A different video may already have this name there; then it gets a new one.
+      const name = await save.writeTo(target.dir, it.outName, it.result.blob, it.written);
+      it.saved = { where: target.certainty === 'other' ? 'folder' : 'player', label: target.label, certainty: target.certainty, internal: !!target.internal, batch: targets.length, renamed: name !== it.outName };
+      it.outName = name;
+      it.written = { name, size: it.result.blob.size };
       it.picking = false;
     }
   } catch (err) {
@@ -747,12 +753,13 @@ function renderDone(item) {
         : item.saved.certainty === 'player'
           ? t('saved.player', { where: item.saved.label })
           : t('saved.folder', { where: item.saved.label });
-    frag.append(h('div', { class: 'saved', tabindex: '-1' }, icon('check', 'i'), h('span', { text: msg })));
+    const renamed = item.saved.renamed ? ` ${t('saved.renamed', { name: item.outName })}` : '';
+    frag.append(h('div', { class: 'saved', tabindex: '-1' }, icon('check', 'i'), h('span', { text: msg + renamed })));
     if (!allSaved) {
       frag.append(h('p', { class: 'work-meta remaining', text: t('done.remaining', { n: toSave }) }));
     } else {
       const guide = h('div', { class: 'guide' });
-      renderGuideInto(guide, item, where === 'player', 2, n);
+      renderGuideInto(guide, item, where, 2, n);
       frag.append(guide);
     }
   }
@@ -771,9 +778,12 @@ function renderDone(item) {
   return frag;
 }
 
-function renderGuideInto(container, item, onPlayer = false, level = 2, count = 1) {
+/** The steps left after saving to `where`: 'player', 'folder' (a computer
+ * folder the person chose) or 'downloads'. */
+function renderGuideInto(container, item, where, level = 2, count = 1) {
   container.replaceChildren();
   const isPhone = save.platform !== 'computer';
+  const onPlayer = where === 'player';
   container.append(h(`h${level}`, { class: 'guide-title', text: onPlayer ? t('copy.titleDone') : t('copy.title') }));
   const ol = h('ol');
   const osKey = save.os === 'mac' ? 'mac' : save.os === 'windows' ? 'windows' : 'other';
@@ -784,13 +794,24 @@ function renderGuideInto(container, item, onPlayer = false, level = 2, count = 1
     return;
   }
   if (!onPlayer) {
+    const name = item.outName || item.name;
     ol.append(h('li', { text: t('copy.connect') }));
-    ol.append(h('li', { text: t(`copy.open.${osKey}`, { name: item.outName || item.name }) }));
+    // If Downloads already holds this name, the browser saves it under another
+    // one, and no web API says which: the newest is the one just saved.
+    const open = where === 'folder' ? t(`copy.openFolder.${osKey}`, { folder: item.saved.label, name }) : t(`copy.open.${osKey}`, { name });
+    ol.append(h('li', { text: open }));
     ol.append(h('li', { text: t(`copy.paste.${osKey}`) }));
     if (count > 1) ol.append(h('li', { text: t('copy.many', { n: count }) }));
   }
-  ol.append(h('li', { text: t(`copy.eject.${osKey}`) }));
-  ol.append(h('li', { text: count > 1 ? t('copy.watchMany', { n: count }) : t('copy.watch', { title: titleOf(item.outName || item.title) }) }));
+  // Both disks can have the same name ("NO NAME" on a Mac), and ejecting
+  // either drops both, so eject the one the video went to, told by what's on it.
+  const internal = onPlayer && item.saved?.internal;
+  ol.append(h('li', { text: t(`copy.eject.${osKey}`, { sign: t(internal ? 'copy.sign.internal' : 'copy.sign.card') }) }));
+  // On the player, «Vídeo» first asks which memory to list.
+  const index = t(internal ? 'copy.index.main' : 'copy.index.card');
+  // Only a save straight to the player knows the name it has there.
+  const watch = count > 1 ? t('copy.watchMany', { n: count, index }) : onPlayer ? t('copy.watch', { title: titleOf(item.outName || item.title), index }) : t('copy.watchCopied', { index });
+  ol.append(h('li', { text: watch }));
   container.append(ol);
 }
 
@@ -803,21 +824,15 @@ function renderFaqHow(container) {
 function renderError(item) {
   const frag = document.createDocumentFragment();
   const key = errorKey(item.error);
-  const isInfo = key === 'already-amv';
   frag.append(
     h(
       'div',
       { class: 'done-head' },
-      doneMark(item, isInfo ? 'ok' : 'bad'),
+      doneMark(item, 'bad'),
       h('h1', { class: 'work-title display', tabindex: '-1', id: 'work-title', text: t(`err.title.${key}`) })
     )
   );
   frag.append(h('p', { class: 'lede', text: t(`err.body.${key}`) }));
-  if (isInfo) {
-    const guide = h('div', { class: 'guide' });
-    renderGuideInto(guide, { outName: item.name, title: item.title });
-    frag.append(guide);
-  }
   const actions = h('div', { class: 'actions' });
   const canRetry = ['internal', 'out-of-memory', 'engine-unavailable', 'save-failed'].includes(key);
   if (canRetry) {
@@ -829,27 +844,25 @@ function renderError(item) {
   if (items.length > 1) actions.append(h('button', { class: 'btn btn-quiet', type: 'button', onclick: () => removeItem(item) }, t('item.remove')));
   frag.append(actions);
 
-  if (!isInfo) {
-    const code = [item.error?.code || 'internal', engineStatus.mode].filter(Boolean).join(' · ');
-    frag.append(h('p', { class: 'err-code', text: t('err.code', { code }) }));
-    const detailText = diagnostics(item);
-    const pre = h('pre', { text: detailText });
-    const copyBtn = h('button', { class: 'btn btn-secondary', type: 'button' }, icon('copy', 'i i-sm'), t('err.copy'));
-    copyBtn.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(detailText);
-      } catch (_) {
-        const r = document.createRange();
-        r.selectNodeContents(pre);
-        const s = getSelection();
-        s.removeAllRanges();
-        s.addRange(r);
-        document.execCommand?.('copy');
-      }
-      copyBtn.lastChild.textContent = t('err.copied');
-    });
-    frag.append(h('details', { class: 'details' }, h('summary', { text: t('err.details') }), pre, copyBtn));
-  }
+  const code = [item.error?.code || 'internal', engineStatus.mode].filter(Boolean).join(' · ');
+  frag.append(h('p', { class: 'err-code', text: t('err.code', { code }) }));
+  const detailText = diagnostics(item);
+  const pre = h('pre', { text: detailText });
+  const copyBtn = h('button', { class: 'btn btn-secondary', type: 'button' }, icon('copy', 'i i-sm'), t('err.copy'));
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(detailText);
+    } catch (_) {
+      const r = document.createRange();
+      r.selectNodeContents(pre);
+      const s = getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+      document.execCommand?.('copy');
+    }
+    copyBtn.lastChild.textContent = t('err.copied');
+  });
+  frag.append(h('details', { class: 'details' }, h('summary', { text: t('err.details') }), pre, copyBtn));
   return frag;
 }
 

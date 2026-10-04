@@ -21,7 +21,7 @@ import { EngineError } from './engine.js';
 import { parseAmv, parseAmvBlob, validateAmv } from './amv.js';
 
 export class ConvertError extends Error {
-  /** code: empty | not-media | already-amv | unreadable | incomplete |
+  /** code: empty | not-media | unreadable | incomplete |
    * undecodable | no-frames | out-of-memory | engine-unavailable |
    * browser-unsupported | invalid-output | cancelled | internal */
   constructor(code, detail = {}) {
