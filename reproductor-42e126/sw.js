@@ -3,7 +3,7 @@
  * cross-origin isolated and can use the fast multi-threaded converter.
  * Everything the page loads is same-origin, so require-corp costs nothing. */
 
-const VERSION = 'dd6e8d6d314d';
+const VERSION = 'cd205cb97e52';
 const SHELL_CACHE = `shell-${VERSION}`;
 const CORE_CACHE = 'core-ffmpeg-0.12.10'; // immutable: the path changes if the core does
 
@@ -86,6 +86,9 @@ self.addEventListener('activate', (event) => {
   precache().catch(() => {});
 });
 
+// A Response with one of these statuses can't be built with a body.
+const NO_BODY = new Set([204, 205, 304]);
+
 function isolate(response, { revalidate = false } = {}) {
   if (!response || response.status === 0 || response.type === 'opaque' || response.type === 'opaqueredirect') return response;
   const headers = new Headers(response.headers);
@@ -96,7 +99,11 @@ function isolate(response, { revalidate = false } = {}) {
   // files from memory for 10 minutes without asking us, and a visitor could
   // run half old, half new code right after an update. Always ask.
   if (revalidate) headers.set('Cache-Control', 'no-cache');
-  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  // With that header the browser asks again with If-None-Match, and GitHub
+  // Pages answers 304. WebKit hands us that 304 with an empty body stream;
+  // passing the stream on would throw, and the file would fail to load.
+  const body = NO_BODY.has(response.status) ? null : response.body;
+  return new Response(body, { status: response.status, statusText: response.statusText, headers });
 }
 
 async function networkFirst(request) {
